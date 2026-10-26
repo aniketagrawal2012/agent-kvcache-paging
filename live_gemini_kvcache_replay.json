@@ -1,0 +1,37 @@
+{
+  "live_turns_collected": 6,
+  "protocols": {
+    "DEMAND_LRU": {
+      "accesses": 480,
+      "hits": 420,
+      "misses": 60,
+      "hit_rate_pct": 87.5,
+      "prefetch_hits": 0,
+      "stall_ms": 39.05
+    },
+    "DEMAND_LFU": {
+      "accesses": 480,
+      "hits": 420,
+      "misses": 60,
+      "hit_rate_pct": 87.5,
+      "prefetch_hits": 0,
+      "stall_ms": 42.13
+    },
+    "DEMAND_ELLA": {
+      "accesses": 480,
+      "hits": 388,
+      "misses": 92,
+      "hit_rate_pct": 80.83,
+      "prefetch_hits": 0,
+      "stall_ms": 78.01
+    },
+    "SPECULATIVE_ELLA": {
+      "accesses": 480,
+      "hits": 417,
+      "misses": 63,
+      "hit_rate_pct": 86.88,
+      "prefetch_hits": 61,
+      "stall_ms": 73.83
+    }
+  }
+}
