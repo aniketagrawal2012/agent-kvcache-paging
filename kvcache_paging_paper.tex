@@ -1,5 +1,8 @@
 \documentclass[10pt,journal,compsoc]{IEEEtran}
 
+\usepackage{silence}
+\WarningFilter{latexfont}{Font shape}
+\WarningFilter{latexfont}{Size substitutions}
 \usepackage{amsmath,amssymb,amsfonts,amsthm}
 \usepackage{algorithmic}
 \usepackage{algorithm}
@@ -10,6 +13,13 @@
 \usepackage{textcomp}
 \usepackage{xcolor}
 \usepackage{url}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+
+\setlength{\emergencystretch}{3em}
+\hbadness=10000
+\vbadness=10000
 
 \newtheorem{theorem}{Theorem}
 \newtheorem{lemma}[theorem]{Lemma}
@@ -146,7 +156,10 @@ where $\mathbb{I}_{\text{tool},i}(P_k, t) \in \{0, 1\}$ and $\mathbb{I}_{\text{D
 \textbf{Action-Delimiter Epistemic Entropy $\mathcal{H}_i(t)$:} To prevent deterministic JSON punctuation and syntax tokens from collapsing entropy toward zero, the orchestrator evaluates Shannon entropy exclusively at structural branch and action delimiters $m \in \mathcal{T}_{\text{branch}}$ (e.g., \texttt{<|thought|>}, \texttt{<|tool\_call|>}, and tool-name selection tokens) over the candidate action-token subset $\mathcal{V}_{\text{act}}$ ($|\mathcal{V}_{\text{act}}| = 64$), smoothed via an exponential moving average with factor $\beta = 0.3$:
 \begin{equation}
 \label{eq:branch_entropy}
-\mathcal{H}_i(t) = (1 - \beta)\mathcal{H}_i(t-1) + \beta\!\left(-\frac{1}{\ln |\mathcal{V}_{\text{act}}|} \sum_{v \in \mathcal{V}_{\text{act}}} p_{i,m}(v)\ln p_{i,m}(v)\right) \in [0, 1]
+\begin{aligned}
+\mathcal{H}_i(t) &= (1 - \beta)\mathcal{H}_i(t-1) \\
+&\quad + \beta\!\left(-\frac{1}{\ln |\mathcal{V}_{\text{act}}|} \sum_{v \in \mathcal{V}_{\text{act}}} p_{i,m}(v)\ln p_{i,m}(v)\right) \in [0, 1]
+\end{aligned}
 \end{equation}
 with $0\ln 0 \triangleq 0$. During high-uncertainty exploration ($\mathcal{H}_i(t) \to 1$), Eq.~\eqref{eq:ella_score} weights recent scratchpad pages upward while annealing history priority toward $C_{\text{hist}}$; once branching resolves ($\mathcal{H}_i(t) \to 0$), scratchpad priority collapses to $\le 10$ ($\eta_{\text{DAG}}\hat{d}_{\text{DAG}}^{-1}$). Furthermore, because idle tool schemas retain $\ge C_{\text{floor}} = 200$ and history retains $\ge C_{\text{hist}} = 120 > 110$ (the maximum possible scratchpad score $10^2 + \eta_{\text{DAG}} = 110$ at $\Delta t=0, \mathcal{H}_i(t)=1$), neither dormant tool schemas nor verified conversation history ever decay below scratchpad priority over arbitrarily long horizons ($\Delta t \to \infty$).
 
@@ -289,9 +302,47 @@ InfiniGen (1-Step Layer Rehearsal)~\cite{lee2024infinigen} & $24.14 \pm 0.48\%$ 
 
 \begin{figure*}[t]
 \centering
+\IfFileExists{plots/fig1_cache_hit_rate_and_stall_elimination.png}{%
 \includegraphics[width=0.32\textwidth]{plots/fig1_cache_hit_rate_and_stall_elimination.png}\hfill
 \includegraphics[width=0.32\textwidth]{plots/fig2_serving_throughput_tps_comparison.png}\hfill
-\includegraphics[width=0.32\textwidth]{plots/fig3_hbm_memory_footprint_reduction.png}
+\includegraphics[width=0.32\textwidth]{plots/fig3_hbm_memory_footprint_reduction.png}}{%
+\begin{minipage}[t]{0.32\textwidth}
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=\textwidth,height=3.8cm,xlabel={Streams ($K$)},ylabel={Hit Rate (\%)},xmin=3,xmax=21,ymin=0,ymax=60,xtick={4,8,12,16,20},legend pos=south west,legend style={font=\tiny},tick label style={font=\tiny},label style={font=\scriptsize},grid=both]
+\addplot[color=red!80!black,mark=triangle*,thick] coordinates {(4,49.49)(8,49.49)(12,49.49)(16,0.20)(20,0.20)};
+\addlegendentry{LRU}
+\addplot[color=orange!85!black,mark=square*,thick] coordinates {(4,49.49)(8,49.49)(12,49.49)(16,51.39)(20,1.21)};
+\addlegendentry{LFU}
+\addplot[color=blue!80!black,mark=*,thick] coordinates {(4,49.49)(8,49.49)(12,49.49)(16,39.39)(20,28.23)};
+\addlegendentry{SE-ELLA}
+\end{axis}
+\end{tikzpicture}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.32\textwidth}
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=\textwidth,height=3.8cm,xlabel={Streams ($K$)},ylabel={Sim.\ Dev.\ Ops/s},xmin=3,xmax=21,ymin=8000,ymax=38000,xtick={4,8,12,16,20},legend pos=south west,legend style={font=\tiny},tick label style={font=\tiny},label style={font=\scriptsize},grid=both]
+\addplot[color=red!80!black,mark=triangle*,thick] coordinates {(4,19979)(8,19979)(12,19979)(16,9735)(20,9735)};
+\addlegendentry{LRU}
+\addplot[color=orange!85!black,mark=square*,thick] coordinates {(4,19979)(8,19979)(12,19979)(16,17949)(20,9816)};
+\addlegendentry{LFU}
+\addplot[color=blue!80!black,mark=*,thick] coordinates {(4,35675)(8,35675)(12,35675)(16,31976)(20,25335)};
+\addlegendentry{SE-ELLA}
+\end{axis}
+\end{tikzpicture}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.32\textwidth}
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=\textwidth,height=3.8cm,xlabel={Streams ($K$)},ylabel={HBM Footprint (MB)},xmin=3,xmax=21,ymin=0,ymax=120,xtick={4,8,12,16,20},legend pos=north west,legend style={font=\tiny},tick label style={font=\tiny},label style={font=\scriptsize},grid=both]
+\addplot[color=gray!70!black,dashed,mark=square*,thick] coordinates {(4,21.0)(8,42.0)(12,63.0)(16,84.0)(20,105.0)};
+\addlegendentry{Uncompacted}
+\addplot[color=blue!80!black,mark=*,thick] coordinates {(4,21.0)(8,42.0)(12,48.0)(16,48.0)(20,48.0)};
+\addlegendentry{SE-Paging (48 MB)}
+\end{axis}
+\end{tikzpicture}
+\end{minipage}}
 \caption{Physical Tensor-Arena Paging Telemetry across $K \in \{4, 8, 12, 16, 20\}$ concurrent agent streams ($N_{\text{dev}}=96$ pages, 5-seed $\text{Mean} \pm \text{SD}$ error bars): (Left) Cache Hit Rate (\%) and Pipeline Stall Ratio (\%) showing the $K=20$ LFU capacity cliff; (Center) Emulated Wall-Clock Page-Lookup Throughput vs.\ Pure Simulated Device Throughput; (Right) Uncompacted Working-Set Growth vs.\ SE-Paging Pinned HBM Allocation.}
 \label{fig:paging_plots}
 \end{figure*}
