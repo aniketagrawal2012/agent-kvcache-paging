@@ -1,37 +1,127 @@
 {
+  "model": "gemini-2.5-flash",
+  "project": "aniket-personal",
+  "concurrency_k": 20,
   "live_turns_collected": 6,
+  "total_live_tokens": 1828,
+  "total_page_accesses": 2140,
+  "entropy_extraction": "Conditional renormalization over top-20 returned delimiter logprobs (Eq. 5)",
   "protocols": {
     "DEMAND_LRU": {
-      "accesses": 480,
-      "hits": 420,
-      "misses": 60,
-      "hit_rate_pct": 87.5,
+      "accesses": 2140,
+      "hits": 80,
+      "misses": 2060,
+      "hit_rate_pct": 3.74,
       "prefetch_hits": 0,
-      "stall_ms": 39.05
+      "partial_overlap_misses": 0,
+      "stall_us": 24720.0,
+      "stall_ms": 24.72,
+      "stall_ratio_pct": 231.03,
+      "sim_dev_ops_s": 60417.84,
+      "wall_ops_s": 51675.84,
+      "wall_sec": 0.04141
     },
     "DEMAND_LFU": {
-      "accesses": 480,
-      "hits": 420,
-      "misses": 60,
-      "hit_rate_pct": 87.5,
+      "accesses": 2140,
+      "hits": 152,
+      "misses": 1988,
+      "hit_rate_pct": 7.1,
       "prefetch_hits": 0,
-      "stall_ms": 42.13
+      "partial_overlap_misses": 0,
+      "stall_us": 23856.0,
+      "stall_ms": 23.856,
+      "stall_ratio_pct": 222.95,
+      "sim_dev_ops_s": 61928.46,
+      "wall_ops_s": 51819.74,
+      "wall_sec": 0.0413
     },
     "DEMAND_ELLA": {
-      "accesses": 480,
-      "hits": 388,
-      "misses": 92,
-      "hit_rate_pct": 80.83,
+      "accesses": 2140,
+      "hits": 628,
+      "misses": 1512,
+      "hit_rate_pct": 29.35,
       "prefetch_hits": 0,
-      "stall_ms": 78.01
+      "partial_overlap_misses": 0,
+      "stall_us": 13608.0,
+      "stall_ms": 13.608,
+      "stall_ratio_pct": 127.18,
+      "sim_dev_ops_s": 88036.86,
+      "wall_ops_s": 68451.52,
+      "wall_sec": 0.03126
     },
     "SPECULATIVE_ELLA": {
-      "accesses": 480,
-      "hits": 417,
-      "misses": 63,
-      "hit_rate_pct": 86.88,
-      "prefetch_hits": 61,
-      "stall_ms": 73.83
+      "accesses": 2140,
+      "hits": 732,
+      "misses": 1408,
+      "hit_rate_pct": 34.21,
+      "prefetch_hits": 74,
+      "partial_overlap_misses": 31,
+      "stall_us": 12470.5,
+      "stall_ms": 12.47,
+      "stall_ratio_pct": 116.55,
+      "sim_dev_ops_s": 92358.82,
+      "wall_ops_s": 80467.77,
+      "wall_sec": 0.02659
+    }
+  },
+  "multi_turn_benchmarks_k20": {
+    "SWE_BENCH_SCRATCHPAD_REVISIT": {
+      "turns_per_stream": 12,
+      "scratchpad_revisit_prob": 0.25,
+      "accesses": 2400,
+      "DEMAND_LRU_hit_rate_pct": 0.45,
+      "DEMAND_LFU_hit_rate_pct": 2.1,
+      "SPECULATIVE_ELLA_hit_rate_pct": 26.82,
+      "SPECULATIVE_ELLA_stall_ratio_pct": 130.18,
+      "SPECULATIVE_ELLA_empirical_qk_retained_pct": 96.42
+    },
+    "GORILLA_MASSIVE_API_CATALOG": {
+      "turns_per_stream": 10,
+      "tool_schema_pages_per_stream": 32,
+      "accesses": 2200,
+      "DEMAND_LRU_hit_rate_pct": 0.36,
+      "DEMAND_LFU_hit_rate_pct": 1.82,
+      "SPECULATIVE_ELLA_hit_rate_pct": 29.45,
+      "SPECULATIVE_ELLA_stall_ratio_pct": 125.1,
+      "SPECULATIVE_ELLA_empirical_qk_retained_pct": 98.15
+    }
+  },
+  "hyperparameter_sensitivity_k20": {
+    "canonical_lambda0.08_ltool0.08_mu0.45_bdag350": {
+      "hit_rate_pct": 28.31,
+      "stall_ratio_pct": 127.34
+    },
+    "lambda_hist_0.04_minus50pct": {
+      "hit_rate_pct": 27.85,
+      "stall_ratio_pct": 128.2
+    },
+    "lambda_hist_0.12_plus50pct": {
+      "hit_rate_pct": 28.12,
+      "stall_ratio_pct": 127.71
+    },
+    "lambda_tool_0.04_minus50pct": {
+      "hit_rate_pct": 27.42,
+      "stall_ratio_pct": 129.02
+    },
+    "lambda_tool_0.12_plus50pct": {
+      "hit_rate_pct": 28.48,
+      "stall_ratio_pct": 127.01
+    },
+    "mu_scratch_0.22_minus50pct": {
+      "hit_rate_pct": 27.9,
+      "stall_ratio_pct": 128.11
+    },
+    "mu_scratch_0.68_plus50pct": {
+      "hit_rate_pct": 28.4,
+      "stall_ratio_pct": 127.18
+    },
+    "b_dag_250_minus29pct": {
+      "hit_rate_pct": 27.55,
+      "stall_ratio_pct": 128.76
+    },
+    "b_dag_500_plus43pct": {
+      "hit_rate_pct": 28.62,
+      "stall_ratio_pct": 126.75
     }
   }
 }

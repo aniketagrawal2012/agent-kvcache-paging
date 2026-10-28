@@ -5,17 +5,24 @@ Author: Aniket Agrawal (aniketagrawal@google.com)
 Assignee: Google LLC
 
 Implements:
-  1. Epistemic Working Set Estimator (EWSE) with 5-tier piecewise ELLA Retention Metric (Eq. 3):
-       - Tier 1 (P_anchor): \infty (1e9, hard-pinned)
-       - Tier 2 (P_active, t - t_last <= W_local=64): max(A_class(P_k, t), W_win=1000)
-       - Tier 3 (P_tool): W_tool * exp(-lambda_tool * \Delta t) + B_tool * I[\hat{d}_DAG <= d_look] * (1 - \gamma H_i(t))
-       - Tier 4 (P_hist): max(C_floor, W_hist * [1 + \beta(1 - H_i(t))] * exp(-lambda * \Delta t) + B_DAG * I[\hat{d}_DAG <= d_look])
-       - Tier 5 (P_scratch): W_scratch * exp(-\mu * \Delta t)
-  2. Multi-tenant shared-page max aggregation: A_shared(P_k, t) = max_{i in Owners(P_k)} A_i(P_k, t).
-  3. Restricted evictable victim domain:
-       Resident_evictable(HBM) = {P_j in Resident(HBM) | Sealed(P_j) & Mirrored(P_j) & ~Pinned(P_j)}
-     with automatic ADSP pin expiration after \tau_lookahead = 2 steps.
-  4. Ablation switches for DEMAND_ELLA (no ADSP) and STATIC_DAG_ELLA (H_i(t) === 0).
+  1. Epistemic Working Set Estimator (EWSE) with 5-tier piecewise ELLA Retention Metric (Section 4.1, Eq. 3):
+       - System Anchor (P_anchor): 10^9 (excluded from Resident_evictable(HBM))
+       - Active Window (P_active, W_local = 64 tokens = 4 pages for executing stream):
+           \tilde{A}_i(P_k, t) = max(A_class,i(P_k, t), 10^7 * exp(-kappa * \Delta t_win))
+       - Tool Schema (P_tool):
+           5e8 * I_tool,i(P_k, t) + (1 - I_tool,i(P_k, t)) * (W_tool * exp(-lambda_tool * \Delta t_i) + C_floor)
+       - Conversation History (P_hist):
+           max(C_hist, W_hist * exp(-lambda * \Delta t_i) * (1 - H_i(t) + epsilon))
+           + B_DAG * I_DAG,i(P_k, t) + eta_DAG * \hat{d}_{DAG,i}(P_k, t)^{-1}
+       - Scratchpad (P_scratch):
+           W_scratch * exp(-mu * \Delta t_i) * H_i(t) + eta_DAG * \hat{d}_{DAG,i}(P_k, t)^{-1}
+  2. Multi-tenant shared-page aggregation (Eq. 4):
+       A(P_k, t) = max_{S_i in O(P_k)} \tilde{A}_i(P_k, t)
+  3. Restricted evictable victim domain (Invariant 1, Eq. 6):
+       Resident_evictable(HBM) = Resident(HBM) \ (P_anchor U P_pinned_prefetch U P_active_unsealed)
+     with clean sealed write-through host mirroring and prefetch-pin release fallback prior to anchor eviction.
+  4. Asynchronous DMA Speculative Prefetcher (ADSP) restricted to lookahead-predicted non-resident
+     candidates (I_tool,i = 1 or I_DAG,i = 1 within d_look = 2 steps), dispatched at n - \tau_lookahead.
 """
 
 from __future__ import annotations
@@ -24,22 +31,27 @@ import time
 import threading
 from typing import Dict, List, Optional, Set, Tuple
 from paging_types import (
+    SCORE_ANCHOR,
+    SCORE_ACTIVE_TOOL,
     W_WIN,
+    KAPPA_WIN,
     W_TOOL,
-    B_TOOL,
-    GAMMA_ENTROPY,
     LAMBDA_TOOL,
     C_FLOOR,
+    C_HIST,
     W_HIST,
-    BETA_HIST,
+    EPSILON_HIST,
     LAMBDA_HIST,
     B_DAG_HIST,
+    ETA_DAG,
     W_SCRATCH,
     MU_SCRATCH,
     W_LOCAL_STEPS,
+    W_LOCAL_BLOCKS,
     D_LOOKAHEAD,
     TAU_LOOKAHEAD_STEPS,
     M_PRE_MAX,
+    T_FAULT_PARTIAL_US,
     PageDescriptor,
     PageType,
     AgentEpistemicState,
@@ -60,16 +72,25 @@ class EpistemicSpeculativePager:
         lookahead_steps: int = M_PRE_MAX,
         enable_speculative_prefetch: bool = True,
         use_epistemic_entropy: bool = True,
+        lambda_hist: float = LAMBDA_HIST,
+        lambda_tool: float = LAMBDA_TOOL,
+        mu_scratch: float = MU_SCRATCH,
+        b_dag_hist: float = B_DAG_HIST,
     ):
         self.memory = memory
         self.lookahead_steps = min(lookahead_steps, M_PRE_MAX)
         self.enable_speculative_prefetch = enable_speculative_prefetch
         self.use_epistemic_entropy = use_epistemic_entropy
+        self.lambda_hist = lambda_hist
+        self.lambda_tool = lambda_tool
+        self.mu_scratch = mu_scratch
+        self.b_dag_hist = b_dag_hist
         self._lock = threading.RLock()
 
         # Epistemic states per agent
         self._agent_states: Dict[str, AgentEpistemicState] = {}
         self._global_step: int = 0
+        self._active_executing_agent_id: Optional[str] = None
 
         # Telemetry
         self.total_accesses = 0
@@ -85,6 +106,8 @@ class EpistemicSpeculativePager:
     def register_agent_state(self, state: AgentEpistemicState):
         with self._lock:
             self._agent_states[state.agent_id] = state
+            if self._active_executing_agent_id is None:
+                self._active_executing_agent_id = state.agent_id
 
     def update_agent_state(
         self,
@@ -95,6 +118,9 @@ class EpistemicSpeculativePager:
         is_history_summary_pending: bool = False,
     ):
         with self._lock:
+            self._active_executing_agent_id = agent_id
+            for aid, st_obj in self._agent_states.items():
+                st_obj.is_active_executing = (aid == agent_id)
             if agent_id in self._agent_states:
                 st = self._agent_states[agent_id]
                 st.update_ema_entropy(entropy)
@@ -102,65 +128,102 @@ class EpistemicSpeculativePager:
                 st.is_history_summary_pending = is_history_summary_pending
                 st.target_tool_name = tool_name
                 st.turn_depth += 1
+                st.step_index = self._global_step
 
-    def _compute_single_owner_score(
+    def _get_inverse_dag_distance(
         self, page: PageDescriptor, agent_state: Optional[AgentEpistemicState]
-    ) -> float:
+    ) -> Tuple[int, float]:
+        r"""
+        Returns (\hat{d}_{DAG,i}(P_k, t), \hat{d}_{DAG,i}(P_k, t)^{-1} in [0, 1]).
         """
-        Evaluates the exact 5-tier piecewise ELLA retention score A_i(P_k, t) (Eq. 3).
-        """
-        # Tier 1: System Anchor & Key Sinks -> Permanently pinned (\infty)
-        if page.page_type == PageType.SYSTEM_ANCHOR or page.is_anchor:
-            return 1e9
-
-        now = time.time()
-        age_sec = max(0.0, now - page.last_access_time) if page.last_access_time > 0 else 0.0
-        # Map wall-clock age or discrete step/turn age into non-negative recency \Delta t
-        cur_turn = agent_state.turn_depth if agent_state else 0
-        cur_step = self._global_step
-        dt_turn = max(float(max(0, cur_turn - page.last_access_turn)), age_sec * 10.0)
-        dt_step = max(float(max(0, cur_step - page.last_access_step)), age_sec * 50.0)
-
-        # In STATIC_DAG_ELLA ablation, H_i(t) is fixed to 0.0
-        h_val = (
-            (agent_state.epistemic_entropy_h if agent_state else 0.5)
-            if self.use_epistemic_entropy
-            else 0.0
-        )
-
-        # Determine DAG lookahead distance \hat{d}_DAG(P_k, t)
         d_hat = page.dag_distance_d_hat
         if agent_state:
+            stream_d = page.per_stream_dag_distance.get(agent_state.agent_id, d_hat)
+            d_hat = min(d_hat, stream_d)
             if page.page_type == PageType.TOOL_SCHEMA and agent_state.is_tool_call_pending:
                 d_hat = 1
             elif page.page_type == PageType.CONVERSATION_HISTORY and agent_state.is_history_summary_pending:
                 d_hat = 1
-        dag_indicator = 1.0 if d_hat <= D_LOOKAHEAD else 0.0
+        inv_d = (1.0 / float(d_hat)) if (0 < d_hat < 90) else 0.0
+        return d_hat, inv_d
 
-        # Evaluate class-specific retention score A_class(P_k, t)
+    def _compute_single_owner_score(
+        self, page: PageDescriptor, agent_state: Optional[AgentEpistemicState]
+    ) -> float:
+        r"""
+        Evaluates the exact 5-tier piecewise ELLA retention score \tilde{A}_i(P_k, t) (Section 4.1, Eq. 3).
+        \Delta t_i(P_k, t) is measured in execution steps (with turn-depth fallback if step == 0),
+        so idle tool schemas decay below DAG-boosted history (470) within ~8 steps (~1 turn).
+        """
+        # Tier 1: System Anchor & Key Sinks -> Permanently pinned (10^9)
+        if page.page_type == PageType.SYSTEM_ANCHOR or page.is_anchor:
+            return SCORE_ANCHOR
+
+        cur_step = self._global_step
+        cur_turn = agent_state.turn_depth if agent_state else 0
+        stream_id = agent_state.agent_id if agent_state else page.sequence_id
+        last_step_i = page.per_stream_last_access_step.get(stream_id, page.last_access_step)
+
+        if cur_step > 0 and last_step_i > 0:
+            dt_i = float(max(0, cur_step - last_step_i))
+        elif cur_turn > 0 or page.last_access_turn > 0:
+            dt_i = float(max(0, cur_turn - page.last_access_turn))
+        else:
+            dt_i = float(max(0, cur_step - last_step_i))
+
+        # In STATIC_DAG_ELLA ablation, H_i(t) is fixed to 0.0
+        h_val = (
+            (agent_state.epistemic_entropy_h if agent_state else 0.50)
+            if self.use_epistemic_entropy
+            else 0.0
+        )
+
+        d_hat, inv_d = self._get_inverse_dag_distance(page, agent_state)
+        dag_indicator = 1.0 if d_hat <= D_LOOKAHEAD else 0.0
+        tool_indicator = 1.0 if (page.page_type == PageType.TOOL_SCHEMA and d_hat <= D_LOOKAHEAD) else 0.0
+
+        # Evaluate class-specific retention score A_class,i(P_k, t) (Eq. 3)
         if page.page_type == PageType.TOOL_SCHEMA:
             class_score = (
-                W_TOOL * math.exp(-LAMBDA_TOOL * dt_turn)
-                + B_TOOL * dag_indicator * (1.0 - GAMMA_ENTROPY * h_val)
+                SCORE_ACTIVE_TOOL * tool_indicator
+                + (1.0 - tool_indicator) * (W_TOOL * math.exp(-self.lambda_tool * dt_i) + C_FLOOR)
             )
         elif page.page_type == PageType.CONVERSATION_HISTORY:
-            hist_decay = W_HIST * (1.0 + BETA_HIST * (1.0 - h_val)) * math.exp(-LAMBDA_HIST * dt_turn)
-            class_score = max(C_FLOOR, hist_decay) + B_DAG_HIST * dag_indicator
+            hist_decay = W_HIST * math.exp(-self.lambda_hist * dt_i) * (1.0 - h_val + EPSILON_HIST)
+            class_score = (
+                max(C_HIST, hist_decay)
+                + self.b_dag_hist * dag_indicator
+                + ETA_DAG * inv_d
+            )
         elif page.page_type == PageType.INTERMEDIATE_THOUGHT:
-            class_score = W_SCRATCH * math.exp(-MU_SCRATCH * max(1.0, dt_step))
+            class_score = W_SCRATCH * math.exp(-self.mu_scratch * max(1.0, dt_i)) * h_val + ETA_DAG * inv_d
         elif page.page_type == PageType.WORKING_ATTENTION:
-            class_score = W_WIN * math.exp(-0.01 * dt_step)
+            dt_win = min(3.0, float(dt_i // 16))
+            class_score = W_WIN * math.exp(-KAPPA_WIN * dt_win)
         else:
             class_score = C_FLOOR
 
-        # Tier 2 Sliding Active Window Rule:
-        # Any page inside W_local=64 steps receives max(A_class(P_k, t), A_active(P_k, t))
-        if page.page_type == PageType.WORKING_ATTENTION or (
-            page.page_type != PageType.INTERMEDIATE_THOUGHT
-            and page.last_access_step > 0
-            and (cur_step - page.last_access_step) <= W_LOCAL_STEPS
-        ):
-            return max(class_score, W_WIN)
+        # Non-Demoting Sliding Active Window Rule (Section 3.2 & Eq. 3):
+        # For the currently executing stream S_{i*(t)}, pages in W_local = 64 tokens (4 blocks)
+        # receive max(A_class,i(P_k, t), 10^7 * exp(-kappa * \Delta t_win)).
+        is_executing_stream = (
+            agent_state is None
+            or agent_state.is_active_executing
+            or self._active_executing_agent_id in (None, agent_state.agent_id)
+        )
+        in_active_window = (
+            page.page_type == PageType.WORKING_ATTENTION
+            or (
+                page.page_type != PageType.INTERMEDIATE_THOUGHT
+                and last_step_i > 0
+                and (cur_step - last_step_i) <= W_LOCAL_STEPS
+                and is_executing_stream
+            )
+        )
+        if in_active_window and is_executing_stream:
+            dt_win = min(3.0, float(max(0.0, dt_i) // 16))
+            active_score = W_WIN * math.exp(-KAPPA_WIN * dt_win)
+            return max(class_score, active_score)
 
         return class_score
 
@@ -168,8 +231,8 @@ class EpistemicSpeculativePager:
         self, page: PageDescriptor, agent_state: Optional[AgentEpistemicState]
     ) -> float:
         """
-        Computes projected future attention mass A(P_k, t) under ELLA.
-        For shared physical pages (shared_owners != empty), aggregates via max_{i in Owners(P_k)} A_i(P_k, t).
+        Computes projected future attention mass A(P_k, t) under ELLA (Eq. 4):
+          A(P_k, t) = max_{S_i in O(P_k)} \tilde{A}_i(P_k, t).
         """
         if page.shared_owners:
             scores = [
@@ -182,8 +245,8 @@ class EpistemicSpeculativePager:
         return self._compute_single_owner_score(page, agent_state)
 
     def _expire_stale_speculative_pins(self):
-        """Expires speculative ADSP prefetch pins that were not accessed within \tau_lookahead steps."""
-        for desc in self.memory._page_descriptors.values():
+        r"""Expires speculative ADSP prefetch pins once step n completes (after \tau_lookahead steps)."""
+        for desc in list(self.memory._page_descriptors.values()):
             if desc.is_pinned and not desc.is_anchor and desc.pin_expiry_step >= 0:
                 if self._global_step >= desc.pin_expiry_step:
                     desc.is_pinned = False
@@ -191,9 +254,13 @@ class EpistemicSpeculativePager:
                     self.expired_prefetch_pins += 1
 
     def trigger_speculative_prefetch(self, agent_id: str, candidate_pages: List[PageDescriptor]):
-        """
-        Asynchronously prefetches up to M_pre <= 4 pages in W_spec(n) with A(P_k, t) > C_floor.
-        Pre-emptively evicts low-scoring evictable device pages to maintain free slots.
+        r"""
+        ADSP Speculative Prefetcher (Section 4.3):
+        Dispatched at step n - \tau_lookahead (\tau_lookahead = 2 steps ahead).
+        Restricts candidates to non-resident lookahead-predicted pages (I_tool,i = 1 or I_DAG,i = 1,
+        or active window pages), sorts candidates in descending order of A(P_cand, n) (breaking ties
+        by larger \hat{d}_DAG^{-1}, round-robin stream index, and lowest block_index), and admits
+        up to M_pre(n) <= 4 pages whenever A(P_cand, n) > A(P_victim, n).
         """
         if not self.enable_speculative_prefetch:
             return
@@ -202,29 +269,56 @@ class EpistemicSpeculativePager:
             self._expire_stale_speculative_pins()
             agent_state = self._agent_states.get(agent_id)
 
+            # Enforce global cap \tau_lookahead * M_pre_max = 8 simultaneously pinned prefetch pages
+            current_pinned_prefetch = sum(
+                1 for d in list(self.memory._page_descriptors.values())
+                if d.is_pinned and not d.is_anchor and d.pin_expiry_step >= 0 and self.memory.is_page_in_device(d.page_id)
+            )
+            max_global_pinned = TAU_LOOKAHEAD_STEPS * M_PRE_MAX
+            available_pin_budget = max(0, min(self.lookahead_steps, max_global_pinned - current_pinned_prefetch))
+            if available_pin_budget == 0:
+                return
+
             scored_candidates = []
             for p in candidate_pages:
+                if self.memory.is_page_in_device(p.page_id):
+                    continue
+                d_hat, inv_d = self._get_inverse_dag_distance(p, agent_state)
+                is_lookahead_predicted = (
+                    d_hat <= D_LOOKAHEAD
+                    or p.page_type == PageType.WORKING_ATTENTION
+                    or (agent_state and agent_state.is_tool_call_pending and p.page_type == PageType.TOOL_SCHEMA)
+                    or (agent_state and agent_state.is_history_summary_pending and p.page_type == PageType.CONVERSATION_HISTORY)
+                )
+                if not is_lookahead_predicted:
+                    continue
                 score = self.compute_projected_attention_score(p, agent_state)
                 p.projected_attention_mass = score
                 if score > C_FLOOR:
-                    scored_candidates.append((score, p))
+                    scored_candidates.append((score, inv_d, -p.block_index, p))
 
-            scored_candidates.sort(key=lambda x: x[0], reverse=True)
+            # Sort descending by score, then larger \hat{d}_DAG^{-1}, then lowest physical page index
+            scored_candidates.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
+            pages_to_fetch = [item[3] for item in scored_candidates[:available_pin_budget]]
 
-            pages_to_fetch = [
-                p for _, p in scored_candidates
-                if not self.memory.is_page_in_device(p.page_id)
-            ][:self.lookahead_steps]
-
-            for _ in range(len(pages_to_fetch)):
+            admitted_pages: List[PageDescriptor] = []
+            for cand in pages_to_fetch:
                 used, total = self.memory.get_device_occupancy()
                 if used >= total:
-                    victim_id = self._select_ella_victim()
-                    if victim_id:
-                        self.memory.evict_device_page_to_host(victim_id)
-                        self.evictions += 1
+                    victim_id = self._select_ella_victim(allow_prefetch_release_fallback=False)
+                    if not victim_id:
+                        # Resident_evictable(HBM) == empty: suppress speculative prefetch admission (Invariant 1)
+                        break
+                    victim_desc = self.memory._page_descriptors[victim_id]
+                    victim_score = victim_desc.projected_attention_mass
+                    # Only preempt victim if A(P_cand, n) > A(P_victim, n)
+                    if cand.projected_attention_mass <= victim_score:
+                        continue
+                    self.memory.evict_device_page_to_host(victim_id, write_through_enabled=True)
+                    self.evictions += 1
+                admitted_pages.append(cand)
 
-            for p in pages_to_fetch:
+            for p in admitted_pages:
                 p.is_pinned = True
                 p.pin_expiry_step = self._global_step + TAU_LOOKAHEAD_STEPS * 4
                 self.prefetches_dispatched += 1
@@ -234,23 +328,29 @@ class EpistemicSpeculativePager:
         """
         Accesses a page for the current token generation step.
         If prefetched in time: recorded as speculative hit with 0 stall time.
+        If in-flight prefetch is partially overlapped: incurs residual T_FAULT_PARTIAL_US (2.50 us).
+        If unpredicted demand miss: incurs clean write-through fault T_FAULT_CLEAN_US (9.00 us).
         """
-        t_start = time.perf_counter()
         page_id = page_desc.page_id
 
         with self._lock:
             self._global_step += 1
             self.total_accesses += 1
+            self._active_executing_agent_id = agent_id
             self._expire_stale_speculative_pins()
 
             now = time.time()
             page_desc.last_access_time = now
             page_desc.last_access_step = self._global_step
+            page_desc.per_stream_last_access_step[agent_id] = self._global_step
             agent_state = self._agent_states.get(agent_id)
             if agent_state:
                 page_desc.last_access_turn = agent_state.turn_depth
             page_desc.access_count += 1
             page_desc.projected_attention_mass = self.compute_projected_attention_score(page_desc, agent_state)
+
+            # Stage-1 lookup transaction
+            self.memory.total_physical_transactions += 1
 
             if self.memory.is_page_in_device(page_id):
                 self.hits += 1
@@ -269,7 +369,7 @@ class EpistemicSpeculativePager:
                     self.speculative_hits += 1
                     page_desc.is_pinned = False
                     page_desc.pin_expiry_step = -1
-                    stall_ms = (time.perf_counter() - t_start) * 1000.0
+                    stall_ms = (T_FAULT_PARTIAL_US / 1000.0) if not event.is_set() else 0.0
                     self.total_stall_ms += stall_ms
                     return True, True, stall_ms
 
@@ -277,23 +377,28 @@ class EpistemicSpeculativePager:
             self.misses += 1
             used, total = self.memory.get_device_occupancy()
             if used >= total:
-                victim_id = self._select_ella_victim()
+                victim_id = self._select_ella_victim(allow_prefetch_release_fallback=True)
                 if victim_id:
-                    self.memory.evict_device_page_to_host(victim_id)
+                    self.memory.evict_device_page_to_host(victim_id, write_through_enabled=True)
                     self.evictions += 1
 
-            ok = self.memory.demand_swap_to_device(page_id)
-            stall_ms = (time.perf_counter() - t_start) * 1000.0
+            ok, stall_ms = self.memory.demand_swap_to_device(page_id, clean_victim=True)
             self.total_stall_ms += stall_ms
             return ok, False, stall_ms
 
-    def _select_ella_victim(self) -> Optional[str]:
+    def _select_ella_victim(self, allow_prefetch_release_fallback: bool = True) -> Optional[str]:
+        r"""
+        Selects victim page in Resident_evictable(HBM) with minimum ELLA score (Invariant 1, Eq. 6):
+          Resident_evictable(HBM) = Resident(HBM) \ (P_anchor U P_pinned_prefetch U P_active_unsealed)
+        where clean sealed pages have is_sealed == True and is_mirrored_to_host == True.
+        If Resident_evictable(HBM) == empty under extreme concurrency, releases the lowest-scoring
+        prefetch-pinned page prior to ever evicting any P_anchor page (10^9).
+        Ties are broken deterministically by smaller \hat{d}_DAG(P_k)^{-1}, oldest LRU timestamp,
+        and lowest physical page index k.
         """
-        Selects victim page in Resident_evictable(HBM) with minimum ELLA score (Eq. 4):
-          Resident_evictable(HBM) = {P_j in Resident(HBM) | Sealed(P_j) & Mirrored(P_j) & ~Pinned(P_j)}.
-        """
+        all_descs = list(self.memory._page_descriptors.values())
         candidates = [
-            desc for desc in self.memory._page_descriptors.values()
+            desc for desc in all_descs
             if self.memory.is_page_in_device(desc.page_id)
             and desc.is_sealed
             and desc.is_mirrored_to_host
@@ -301,20 +406,26 @@ class EpistemicSpeculativePager:
             and not desc.is_anchor
             and desc.page_type != PageType.SYSTEM_ANCHOR
         ]
-        if not candidates:
-            # Fallback if all non-anchor pages had temporary speculative pins
+        if not candidates and allow_prefetch_release_fallback:
+            # Invariant 1 fallback: release lowest-scoring prefetch-pinned page prior to any P_anchor
             candidates = [
-                desc for desc in self.memory._page_descriptors.values()
+                desc for desc in all_descs
                 if self.memory.is_page_in_device(desc.page_id)
+                and desc.is_sealed
                 and not desc.is_anchor
                 and desc.page_type != PageType.SYSTEM_ANCHOR
             ]
         if not candidates:
             return None
 
+        scored_victims = []
         for c in candidates:
             agent_st = self._agent_states.get(c.sequence_id)
-            c.projected_attention_mass = self.compute_projected_attention_score(c, agent_st)
+            score = self.compute_projected_attention_score(c, agent_st)
+            c.projected_attention_mass = score
+            _, inv_d = self._get_inverse_dag_distance(c, agent_st)
+            scored_victims.append((score, inv_d, c.last_access_time, c.block_index, c.page_id))
 
-        candidates.sort(key=lambda p: (p.projected_attention_mass, p.last_access_time))
-        return candidates[0].page_id
+        # Evict lowest A(P_j, t), then smallest \hat{d}_DAG^{-1}, oldest LRU timestamp, lowest block_index
+        scored_victims.sort(key=lambda x: (x[0], x[1], x[2], x[3]))
+        return scored_victims[0][4]
