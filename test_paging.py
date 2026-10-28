@@ -289,6 +289,42 @@ class TestKVCachePagingHierarchy(unittest.TestCase):
         self.assertGreaterEqual(hist_score, 470.0)
         self.assertGreater(hist_score, tool_score, "DAG-predicted history must outrank decayed idle tool schema!")
 
+        # Verify #7: Idle tool schema at d_hat=3 (outside d_look=2) receives +eta_DAG * d_hat^{-1} = +3.33
+        idle_tool_d3 = PageDescriptor(
+            page_id="tool_d3",
+            sequence_id="ag_decay",
+            block_index=2,
+            page_type=PageType.TOOL_SCHEMA,
+            last_access_step=20,
+            dag_distance_d_hat=3,
+        )
+        score_d3 = pager.compute_projected_attention_score(idle_tool_d3, st)
+        self.assertGreater(score_d3, tool_score, "Idle tool at d_hat=3 must outrank permanently dormant tool (d_hat=99)!")
+
+        # Verify #2: Shared page inherits tie-breaker attributes from maximizing owner stream
+        st_b = AgentEpistemicState(
+            agent_id="ag_b",
+            sequence_id="ag_b",
+            turn_depth=5,
+            epistemic_entropy_h=0.9,
+            is_tool_call_pending=False,
+        )
+        pager.register_agent_state(st_b)
+        shared_p = PageDescriptor(
+            page_id="shared_tool",
+            sequence_id="ag_decay",
+            block_index=3,
+            page_type=PageType.TOOL_SCHEMA,
+            last_access_step=20,
+            dag_distance_d_hat=99,
+            shared_owners={"ag_decay", "ag_b"},
+            per_stream_dag_distance={"ag_decay": 99, "ag_b": 4},
+        )
+        max_sc, max_inv_d, max_oid, _ = pager.compute_score_and_maximizing_owner(shared_p, st)
+        self.assertEqual(max_oid, "ag_b")
+        self.assertAlmostEqual(max_inv_d, 0.25, places=5)
+
+
     def test_08_invariant1_anchor_exclusion_and_prefetch_release_fallback(self):
         """
         Verify PAT V2 #5: P_anchor is excluded from Resident_evictable(HBM) and prefetch-pinned

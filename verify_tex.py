@@ -93,8 +93,10 @@ def verify_latex(filename: str):
         r"\IEEEcompsocitemizethanks",
     ):
         assert forbidden not in code, f"Forbidden journal macro present: {forbidden}"
+    assert "**" not in code, "Stray Markdown '**' syntax found in LaTeX document!"
 
     print("[SUCCESS] LaTeX document is 100% syntactically valid, citation-verified, and structurally balanced!")
+
 
 
 if __name__ == "__main__":

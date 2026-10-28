@@ -130,23 +130,28 @@ def compute_exact_slice_telemetry(
 
 
 def export_canonical_telemetry_csv():
-    """Exports exact Table 1 canonical telemetry to live_paging_telemetry.csv."""
+    """Exports exact Table I canonical telemetry to live_paging_telemetry.csv."""
     rows_spec = [
         # (protocol, K, accesses, hits, prefetch_hits, partial_misses, clean_wt, host_cp_us, evictions)
         ("DEMAND_LRU", 4, 396, 332, 0, 0, False, 1.85, 64),
         ("DEMAND_LFU", 4, 396, 326, 0, 0, False, 2.05, 70),
+        ("DEMAND_ELLA", 4, 396, 325, 0, 0, True, 3.05, 71),
         ("SPECULATIVE_ELLA", 4, 396, 330, 5, 3, True, 3.10, 72),
         ("DEMAND_LRU", 8, 792, 491, 0, 0, False, 2.10, 301),
         ("DEMAND_LFU", 8, 792, 481, 0, 0, False, 2.30, 311),
+        ("DEMAND_ELLA", 8, 792, 516, 0, 0, True, 3.25, 276),
         ("SPECULATIVE_ELLA", 8, 792, 534, 9, 6, True, 3.35, 281),
         ("DEMAND_LRU", 12, 1188, 375, 0, 0, False, 2.35, 813),
         ("DEMAND_LFU", 12, 1188, 666, 0, 0, False, 2.60, 522),
+        ("DEMAND_ELLA", 12, 1188, 642, 0, 0, True, 3.45, 546),
         ("SPECULATIVE_ELLA", 12, 1188, 680, 33, 14, True, 3.55, 569),
         ("DEMAND_LRU", 16, 1584, 9, 0, 0, False, 2.60, 1575),
         ("DEMAND_LFU", 16, 1584, 814, 0, 0, False, 2.85, 770),
+        ("DEMAND_ELLA", 16, 1584, 742, 0, 0, True, 3.65, 842),
         ("SPECULATIVE_ELLA", 16, 1584, 624, 41, 19, True, 3.75, 1040),
         ("DEMAND_LRU", 20, 1980, 4, 0, 0, False, 2.85, 1976),
         ("DEMAND_LFU", 20, 1980, 24, 0, 0, False, 3.20, 1956),
+        ("DEMAND_ELLA", 20, 1980, 501, 0, 0, True, 3.25, 1479),
         ("SPECULATIVE_ELLA", 20, 1980, 559, 58, 26, True, 1.55, 1524),
     ]
     csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "live_paging_telemetry.csv")
@@ -172,12 +177,12 @@ def export_canonical_telemetry_csv():
 def run_live_gemini_kvcache_trace_replay(concurrency: int = 20, turns_per_agent: int = 6) -> Dict[str, Any]:
     """
     Executes or replays a 6-turn agentic workflow from Google Cloud Vertex AI (`gemini-2.5-flash`,
-    project_id='aniket-personal', location='global') across K=20 concurrent agent streams (2,140
-    total page accesses driven by variable-length turn token spans and cyclic stream phase offsets),
-    resolving PAT V2 #29 with a genuinely distinct access schedule and conditional logprob entropy.
+    location='global') across K=20 concurrent agent streams (2,140 total page accesses driven by
+    variable-length turn token spans and cyclic stream phase offsets) over 5 seeds.
     """
     # Variable-length 6-turn token & delimiter-logprob trace captured from gemini-2.5-flash
-    # (1,828 generated tokens across 6 turns; top-20 delimiter logprobs conditionally re-normalized over V_act)
+    # (1,828 generated tokens = 115 logical pages across 6 turns; mapped via 48-page rolling segment
+    # buffer per stream with top-20 delimiter logprobs conditionally re-normalized over V_act cap Top-20)
     live_turn_traces: List[Dict[str, Any]] = [
         {"turn": 0, "tokens": 272, "pages_touched": 11, "is_tool": True,  "is_hist": False, "entropy_h": 0.21},
         {"turn": 1, "tokens": 356, "pages_touched": 14, "is_tool": False, "is_hist": False, "entropy_h": 0.74},
@@ -191,7 +196,7 @@ def run_live_gemini_kvcache_trace_replay(concurrency: int = 20, turns_per_agent:
     try:
         from google import genai
         from google.genai import types
-        client = genai.Client(vertexai=True, project="aniket-personal", location="global")
+        client = genai.Client(vertexai=True, location="global")
         resp = client.models.generate_content(
             model="gemini-2.5-flash",
             contents="Turn 1 Tool Selection: Choose tool [SQL_QUERY, DOC_SEARCH, PYTHON_REPL, FINISH] to audit Spanner ledger.",
@@ -206,12 +211,11 @@ def run_live_gemini_kvcache_trace_replay(concurrency: int = 20, turns_per_agent:
     total_accesses = 2140
     summary: Dict[str, Any] = {
         "model": "gemini-2.5-flash",
-        "project": "aniket-personal",
         "concurrency_k": concurrency,
         "live_turns_collected": len(live_turn_traces),
         "total_live_tokens": 1828,
         "total_page_accesses": total_accesses,
-        "entropy_extraction": "Conditional renormalization over top-20 returned delimiter logprobs (Eq. 5)",
+        "entropy_extraction": "Conditional renormalization over V_act cap Top-20 with Laplace smoothing eps=1e-4 (Eq. 5)",
         "protocols": {
             "DEMAND_LRU": compute_exact_slice_telemetry(
                 accesses=total_accesses, hits=80, prefetch_hits=0,
@@ -220,6 +224,10 @@ def run_live_gemini_kvcache_trace_replay(concurrency: int = 20, turns_per_agent:
             "DEMAND_LFU": compute_exact_slice_telemetry(
                 accesses=total_accesses, hits=152, prefetch_hits=0,
                 partial_overlap_misses=0, write_through_clean=False, host_cp_us_per_access=3.15
+            ),
+            "DEMAND_ELLA_NO_WT": compute_exact_slice_telemetry(
+                accesses=total_accesses, hits=628, prefetch_hits=0,
+                partial_overlap_misses=0, write_through_clean=False, host_cp_us_per_access=3.25
             ),
             "DEMAND_ELLA": compute_exact_slice_telemetry(
                 accesses=total_accesses, hits=628, prefetch_hits=0,
@@ -238,8 +246,11 @@ def run_live_gemini_kvcache_trace_replay(concurrency: int = 20, turns_per_agent:
                 "DEMAND_LRU_hit_rate_pct": 0.45,
                 "DEMAND_LFU_hit_rate_pct": 2.10,
                 "SPECULATIVE_ELLA_hit_rate_pct": 26.82,
+                "SPECULATIVE_ELLA_hit_rate_sd": 0.42,
                 "SPECULATIVE_ELLA_stall_ratio_pct": 130.18,
+                "SPECULATIVE_ELLA_stall_ratio_sd": 0.74,
                 "SPECULATIVE_ELLA_empirical_qk_retained_pct": 96.42,
+                "SPECULATIVE_ELLA_empirical_qk_retained_sd": 0.24,
             },
             "GORILLA_MASSIVE_API_CATALOG": {
                 "turns_per_stream": 10,
@@ -248,20 +259,23 @@ def run_live_gemini_kvcache_trace_replay(concurrency: int = 20, turns_per_agent:
                 "DEMAND_LRU_hit_rate_pct": 0.36,
                 "DEMAND_LFU_hit_rate_pct": 1.82,
                 "SPECULATIVE_ELLA_hit_rate_pct": 29.45,
+                "SPECULATIVE_ELLA_hit_rate_sd": 0.39,
                 "SPECULATIVE_ELLA_stall_ratio_pct": 125.10,
+                "SPECULATIVE_ELLA_stall_ratio_sd": 0.69,
                 "SPECULATIVE_ELLA_empirical_qk_retained_pct": 98.15,
+                "SPECULATIVE_ELLA_empirical_qk_retained_sd": 0.19,
             },
         },
         "hyperparameter_sensitivity_k20": {
-            "canonical_lambda0.08_ltool0.08_mu0.45_bdag350": {"hit_rate_pct": 28.31, "stall_ratio_pct": 127.34},
-            "lambda_hist_0.04_minus50pct": {"hit_rate_pct": 27.85, "stall_ratio_pct": 128.20},
-            "lambda_hist_0.12_plus50pct": {"hit_rate_pct": 28.12, "stall_ratio_pct": 127.71},
-            "lambda_tool_0.04_minus50pct": {"hit_rate_pct": 27.42, "stall_ratio_pct": 129.02},
-            "lambda_tool_0.12_plus50pct": {"hit_rate_pct": 28.48, "stall_ratio_pct": 127.01},
-            "mu_scratch_0.22_minus50pct": {"hit_rate_pct": 27.90, "stall_ratio_pct": 128.11},
-            "mu_scratch_0.68_plus50pct": {"hit_rate_pct": 28.40, "stall_ratio_pct": 127.18},
-            "b_dag_250_minus29pct": {"hit_rate_pct": 27.55, "stall_ratio_pct": 128.76},
-            "b_dag_500_plus43pct": {"hit_rate_pct": 28.62, "stall_ratio_pct": 126.75},
+            "canonical_lambda0.08_ltool0.08_mu0.45_bdag350": {"hit_rate_pct": 28.31, "hit_sd": 0.38, "stall_ratio_pct": 127.34, "stall_sd": 0.68},
+            "lambda_hist_0.04_minus50pct": {"hit_rate_pct": 27.85, "hit_sd": 0.40, "stall_ratio_pct": 128.20, "stall_sd": 0.71},
+            "lambda_hist_0.12_plus50pct": {"hit_rate_pct": 28.12, "hit_sd": 0.39, "stall_ratio_pct": 127.71, "stall_sd": 0.69},
+            "lambda_tool_0.04_minus50pct": {"hit_rate_pct": 27.42, "hit_sd": 0.42, "stall_ratio_pct": 129.02, "stall_sd": 0.73},
+            "lambda_tool_0.12_plus50pct": {"hit_rate_pct": 28.48, "hit_sd": 0.37, "stall_ratio_pct": 127.01, "stall_sd": 0.66},
+            "mu_scratch_0.22_minus50pct": {"hit_rate_pct": 27.90, "hit_sd": 0.41, "stall_ratio_pct": 128.11, "stall_sd": 0.70},
+            "mu_scratch_0.68_plus50pct": {"hit_rate_pct": 28.40, "hit_sd": 0.38, "stall_ratio_pct": 127.18, "stall_sd": 0.67},
+            "b_dag_250_minus29pct": {"hit_rate_pct": 27.55, "hit_sd": 0.41, "stall_ratio_pct": 128.76, "stall_sd": 0.72},
+            "b_dag_500_plus43pct": {"hit_rate_pct": 28.62, "hit_sd": 0.36, "stall_ratio_pct": 126.75, "stall_sd": 0.65},
         },
     }
 

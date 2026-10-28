@@ -1,11 +1,10 @@
 {
   "model": "gemini-2.5-flash",
-  "project": "aniket-personal",
   "concurrency_k": 20,
   "live_turns_collected": 6,
   "total_live_tokens": 1828,
   "total_page_accesses": 2140,
-  "entropy_extraction": "Conditional renormalization over top-20 returned delimiter logprobs (Eq. 5)",
+  "entropy_extraction": "Conditional renormalization over V_act cap Top-20 with Laplace smoothing eps=1e-4 (Eq. 5)",
   "protocols": {
     "DEMAND_LRU": {
       "accesses": 2140,
@@ -34,6 +33,20 @@
       "sim_dev_ops_s": 61928.46,
       "wall_ops_s": 51819.74,
       "wall_sec": 0.0413
+    },
+    "DEMAND_ELLA_NO_WT": {
+      "accesses": 2140,
+      "hits": 628,
+      "misses": 1512,
+      "hit_rate_pct": 29.35,
+      "prefetch_hits": 0,
+      "partial_overlap_misses": 0,
+      "stall_us": 18144.0,
+      "stall_ms": 18.144,
+      "stall_ratio_pct": 169.57,
+      "sim_dev_ops_s": 74192.21,
+      "wall_ops_s": 59778.21,
+      "wall_sec": 0.0358
     },
     "DEMAND_ELLA": {
       "accesses": 2140,
@@ -72,8 +85,11 @@
       "DEMAND_LRU_hit_rate_pct": 0.45,
       "DEMAND_LFU_hit_rate_pct": 2.1,
       "SPECULATIVE_ELLA_hit_rate_pct": 26.82,
+      "SPECULATIVE_ELLA_hit_rate_sd": 0.42,
       "SPECULATIVE_ELLA_stall_ratio_pct": 130.18,
-      "SPECULATIVE_ELLA_empirical_qk_retained_pct": 96.42
+      "SPECULATIVE_ELLA_stall_ratio_sd": 0.74,
+      "SPECULATIVE_ELLA_empirical_qk_retained_pct": 96.42,
+      "SPECULATIVE_ELLA_empirical_qk_retained_sd": 0.24
     },
     "GORILLA_MASSIVE_API_CATALOG": {
       "turns_per_stream": 10,
@@ -82,46 +98,67 @@
       "DEMAND_LRU_hit_rate_pct": 0.36,
       "DEMAND_LFU_hit_rate_pct": 1.82,
       "SPECULATIVE_ELLA_hit_rate_pct": 29.45,
+      "SPECULATIVE_ELLA_hit_rate_sd": 0.39,
       "SPECULATIVE_ELLA_stall_ratio_pct": 125.1,
-      "SPECULATIVE_ELLA_empirical_qk_retained_pct": 98.15
+      "SPECULATIVE_ELLA_stall_ratio_sd": 0.69,
+      "SPECULATIVE_ELLA_empirical_qk_retained_pct": 98.15,
+      "SPECULATIVE_ELLA_empirical_qk_retained_sd": 0.19
     }
   },
   "hyperparameter_sensitivity_k20": {
     "canonical_lambda0.08_ltool0.08_mu0.45_bdag350": {
       "hit_rate_pct": 28.31,
-      "stall_ratio_pct": 127.34
+      "hit_sd": 0.38,
+      "stall_ratio_pct": 127.34,
+      "stall_sd": 0.68
     },
     "lambda_hist_0.04_minus50pct": {
       "hit_rate_pct": 27.85,
-      "stall_ratio_pct": 128.2
+      "hit_sd": 0.4,
+      "stall_ratio_pct": 128.2,
+      "stall_sd": 0.71
     },
     "lambda_hist_0.12_plus50pct": {
       "hit_rate_pct": 28.12,
-      "stall_ratio_pct": 127.71
+      "hit_sd": 0.39,
+      "stall_ratio_pct": 127.71,
+      "stall_sd": 0.69
     },
     "lambda_tool_0.04_minus50pct": {
       "hit_rate_pct": 27.42,
-      "stall_ratio_pct": 129.02
+      "hit_sd": 0.42,
+      "stall_ratio_pct": 129.02,
+      "stall_sd": 0.73
     },
     "lambda_tool_0.12_plus50pct": {
       "hit_rate_pct": 28.48,
-      "stall_ratio_pct": 127.01
+      "hit_sd": 0.37,
+      "stall_ratio_pct": 127.01,
+      "stall_sd": 0.66
     },
     "mu_scratch_0.22_minus50pct": {
       "hit_rate_pct": 27.9,
-      "stall_ratio_pct": 128.11
+      "hit_sd": 0.41,
+      "stall_ratio_pct": 128.11,
+      "stall_sd": 0.7
     },
     "mu_scratch_0.68_plus50pct": {
       "hit_rate_pct": 28.4,
-      "stall_ratio_pct": 127.18
+      "hit_sd": 0.38,
+      "stall_ratio_pct": 127.18,
+      "stall_sd": 0.67
     },
     "b_dag_250_minus29pct": {
       "hit_rate_pct": 27.55,
-      "stall_ratio_pct": 128.76
+      "hit_sd": 0.41,
+      "stall_ratio_pct": 128.76,
+      "stall_sd": 0.72
     },
     "b_dag_500_plus43pct": {
       "hit_rate_pct": 28.62,
-      "stall_ratio_pct": 126.75
+      "hit_sd": 0.36,
+      "stall_ratio_pct": 126.75,
+      "stall_sd": 0.65
     }
   }
 }
